@@ -226,15 +226,17 @@ def reconstruct_npz(inname, outname):
     with np.load(inname) as npl:
         V, F = npl['V'], npl['F']
         V = pca_whiten(V)
-        V[:,[0, 1, 2]] = V[:,[2, 0,1]] # use the already whitened result to align Y axis
+        max_axis = np.argmax((np.max(V,axis=0) - np.min(V,axis=0)))
+        V = V[:, np.roll(np.arange(3), 1-max_axis)] # 1 means Y
         V *= 1.7
+    assert (np.max(V,axis=0) - np.min(V,axis=0))[1] > 1.69
     while V.shape[0] < 10000:
         eV, eF = p2e(V), p2e(F)
         NV,NF = igl.eigen.MatrixXd(), igl.eigen.MatrixXi()
         igl.upsample(eV,eF, NV,NF)
         V,F = e2p(NV), e2p(NF)
 
-        input = trimesh.Trimesh(vertices=V, faces = F, process=False)
+    input = trimesh.Trimesh(vertices=V, faces = F, process=False)
     scalefactor = 1.0
     if global_variables.opt.scale:
         input, scalefactor = scale(input, global_variables.mesh_ref_LR) #scale input to have the same volume as mesh_ref_LR
