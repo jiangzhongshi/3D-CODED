@@ -70,6 +70,7 @@ if __name__ == '__main__':
     parser.add_argument('--model', type=str, default = 'trained_models/sup_human_invY_network_last.pth',  help='your path to the trained model')
     parser.add_argument('--inputlist', type=str, default =  "data/example_0.ply",  help='your path to mesh 0')
     parser.add_argument('--inputdir', type=str, default =  "data/example_0.ply",  help='your path to mesh 0')
+    parser.add_argument('--outputdir', type=str, default =  "data/example_0.ply",  help='your path to mesh 0')
     parser.add_argument('--inputB', type=str, default =  "data/example_1.ply",  help='your path to mesh 1')
     parser.add_argument('--num_points', type=int, default = 6890,  help='number of points fed to poitnet')
     parser.add_argument('--num_angles', type=int, default = 300,  help='number of angle in the search of optimal reconstruction. Set to 1, if you mesh are already facing the cannonical direction as in data/example_1.ply')
@@ -103,7 +104,9 @@ if __name__ == '__main__':
         lines = fp.readlines()
     for i, l in enumerate(lines):
         start = time.time()
-        reconstruct.reconstruct_npz(opt.inputdir + l.replace('\n',''))
+        inname = (opt.inputdir + l.replace('\n',''))
+        outname = opt.outputdir + l.replace('\n','')
+        reconstruct.reconstruct_npz(inname, outname)
         end = time.time()
         gc.collect()
         print(i, ": ellapsed time is ", end - start, " seconds !")

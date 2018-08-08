@@ -13,11 +13,10 @@ from modules.nnd import NNDModule
 distChamfer = NNDModule()
 import global_variables
 import trimesh
-val_loss = AverageValueMeter()
 
 import pyigl as igl
 from iglhelpers import p2e,e2p
-
+val_loss = AverageValueMeter()
 
 def regress(points):
     """
@@ -134,7 +133,7 @@ def run(input, scalefactor):
 
     # rotate with optimal angle
     rot_y_matrix = rotation_matrix(best_theta, best_flip_y)
-    points2 = torch.os.path.exists(matmul(rot_y_matrix, points)
+    points2 = torch.matmul(rot_y_matrix, points)
     mesh_vert = points2[0].transpose(1,0).detach().data
     bbox0 = torch.max(mesh_vert,dim=0)[0]
     bbox1 = torch.min(mesh_vert, dim=0)[0]
@@ -203,7 +202,7 @@ def reconstruct(input_p):
 def pca_whiten(V):
     V -= np.mean(V,axis=0)
     PCA = sampled_pca(V)
-    V = np.matmul(V ,np.linalg.inv(PCA)))
+    V = np.matmul(V ,np.linalg.inv(PCA))
     V = rescale_V(V)
     return V
 
@@ -226,7 +225,7 @@ def reconstruct_npz(inname, outname):
         return
     with np.load(inname) as npl:
         V, F = npl['V'], npl['F']
-        pca_whiten(V)
+        V = pca_whiten(V)
         V[:,[0, 1, 2]] = V[:,[2, 0,1]] # use the already whitened result to align Y axis
         V *= 1.7
     while V.shape[0] < 10000:
@@ -247,5 +246,5 @@ def reconstruct_npz(inname, outname):
 
     npz_path = os.path.dirname(outname)
     if not os.path.exists(npz_path): os.makedirs(npz_path)
-    np.savez(out_name, V=final_points, l = final_loss)
+    np.savez(outname, V=final_points, l = final_loss)
 
