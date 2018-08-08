@@ -1,0 +1,20 @@
+conda create -n pytorch-sources python=2.7 numpy scipy matplotlib scikit-learn
+source activate pytorch-sources
+cd Workspace/3D-CODED
+cd pytorch
+git reset --hard ea02833
+conda install numpy pyyaml mkl mkl-include setuptools cmake cffi typing
+conda install -c mingfeima mkldnn
+conda install cython pandas
+pip install trimesh visdom
+export CMAKE_PREFIX_PATH=~/miniconda3
+export PATH=/usr/local/cuda-8.0/bin${PATH:+:${PATH}}
+export LD_LIBRARY_PATH=/usr/local/cuda-8.0/lib64${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}
+export C_INCLUDE_PATH=/usr/local/cuda-8.0/include:$C_INCLUDE_PATH
+NO_DISTRIBUTED=1 python setup.py install
+git clone https://github.com/pytorch/vision.git\ncd vision\npython setup.py install
+cd ../../nndistance/src
+nvcc -c -o nnd_cuda.cu.o nnd_cuda.cu -x cu -Xcompiler -fPIC -arch=sm_52
+cd ..
+python build.py
+python test.py

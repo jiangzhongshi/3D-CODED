@@ -15,6 +15,8 @@ import global_variables
 import trimesh
 val_loss = AverageValueMeter()
 
+import pyigl as igl
+from iglhelpers import p2e,e2p
 
 
 def regress(points):
@@ -48,7 +50,12 @@ def regress(points):
         else :
             pointsReconstructed = global_variables.network.decode(input_param)  # forward pass
     # print("loss reg : ", loss)
-    return pointsReconstructed
+    return pointsReconstructed, loss
+
+def rotation_matrix(theta, flip):
+    rot_y_matrix = np.array([[np.cos(theta), 0, np.sin(theta)], [0, flip, 0], [- np.sin(theta), 0,  np.cos(theta)]]).astype(np.float32)
+    rot_y_matrix = Variable(torch.from_numpy(rot_y_matrix).float()).cuda()
+    return rot_y_matrix
 
 def run(input, scalefactor):
     """
@@ -64,7 +71,10 @@ def run(input, scalefactor):
 
     ## Extract points and put them on GPU
     points = input.vertices
-    random_sample = np.random.choice(np.shape(points)[0], size=10000)
+    if np.shape(points)[0] > 10000:
+        random_sample = np.random.choice(np.shape(points)[0], size=10000)
+    else:
+        random_sample = np.arange(np.shape(points)[0])
 
     points = torch.from_numpy(points.astype(np.float32)).contiguous().unsqueeze(0)
     points = Variable(points)
@@ -78,82 +88,70 @@ def run(input, scalefactor):
     points_LR = points_LR.cuda()
 
     theta = 0
+    flip_y = 1
     bestLoss = 10
     pointsReconstructed = global_variables.network(points_LR)
     dist1, dist2 = distChamfer(points_LR.transpose(2, 1).contiguous(), pointsReconstructed)
     loss_net = (torch.mean(dist1)) + (torch.mean(dist2))
     # print("loss : ",  loss_net.data[0], 0)
     # ---- Search best angle for best reconstruction on the Y axis---
-    for theta in np.linspace(-np.pi/2, np.pi/2, global_variables.opt.num_angles):
-        if global_variables.opt.num_angles == 1:
-            theta = 0
-        #  Rotate mesh by theta and renormalise
-        rot_matrix = np.array([[np.cos(theta), 0, np.sin(theta)], [0, 1, 0], [- np.sin(theta), 0,  np.cos(theta)]])
-        rot_matrix = Variable(torch.from_numpy(rot_matrix).float()).cuda()
-        points2 = torch.matmul(rot_matrix, points_LR)
-        mesh_tmp = trimesh.Trimesh(process=False, use_embree=False,vertices=points2[0].transpose(1,0).data.cpu().numpy(), faces=global_variables.network.mesh.faces)
-        #bbox
-        bbox = np.array([[np.max(mesh_tmp.vertices[:,0]), np.max(mesh_tmp.vertices[:,1]), np.max(mesh_tmp.vertices[:,2])], [np.min(mesh_tmp.vertices[:,0]), np.min(mesh_tmp.vertices[:,1]), np.min(mesh_tmp.vertices[:,2])]])
-        norma = Variable(torch.from_numpy((bbox[0] + bbox[1]) / 2).float().cuda())
+    for flip_y in [-1, 1]:
+        for theta in np.linspace(-np.pi, np.pi, global_variables.opt.num_angles):
+            if global_variables.opt.num_angles == 1:
+                theta = 0
+            #  Rotate mesh by theta and renormalise
+            rot_y_matrix = rotation_matrix(theta, flip_y)
+            points2 = torch.matmul(rot_y_matrix, points_LR)
+            mesh_vert = points2[0].transpose(1,0).detach().data
+            bbox0 = torch.max(mesh_vert,dim=0)[0]
+            bbox1 = torch.min(mesh_vert, dim=0)[0]
+            norma = Variable((bbox0 + bbox1) / 2)
 
-        norma2 = norma.unsqueeze(1).expand(3,points2.size(2)).contiguous()
-        points2[0] = points2[0] - norma2
-        mesh_tmp = trimesh.Trimesh(process=False, use_embree=False,vertices=points2[0].transpose(1,0).data.cpu().numpy(), faces=np.array([[0,0,0]]))
+            norma2 = norma.unsqueeze(1).expand(3,points2.size(2)).contiguous()
+            points2[0] = points2[0] - norma2
 
-        # reconstruct rotated mesh
-        pointsReconstructed = global_variables.network(points2)
-        dist1, dist2 = distChamfer(points2.transpose(2, 1).contiguous(), pointsReconstructed)
+            # reconstruct rotated mesh
+            pointsReconstructed = global_variables.network(points2)
+            dist1, dist2 = distChamfer(points2.transpose(2, 1).contiguous(), pointsReconstructed)
 
 
-        loss_net = (torch.mean(dist1)) + (torch.mean(dist2))
-        if loss_net < bestLoss:
-            bestLoss = loss_net
-            best_theta = theta
-            # unrotate the mesh
-            norma3 = norma.unsqueeze(0).expand(pointsReconstructed.size(1), 3).contiguous()
-            pointsReconstructed[0] = pointsReconstructed[0] + norma3
-            rot_matrix = np.array([[np.cos(-theta), 0, np.sin(-theta)], [0, 1, 0], [- np.sin(-theta), 0,  np.cos(-theta)]])
-            rot_matrix = Variable(torch.from_numpy(rot_matrix).float()).cuda()
-            pointsReconstructed = torch.matmul(pointsReconstructed, rot_matrix.transpose(1,0))
-            bestPoints = pointsReconstructed
+            loss_net = (torch.mean(dist1)) + (torch.mean(dist2))
+            if loss_net < bestLoss:
+                bestLoss = loss_net
+                best_theta, best_flip_y = theta, flip_y
+                # unrotate the mesh
+                norma3 = norma.unsqueeze(0).expand(pointsReconstructed.size(1), 3).contiguous()
+                pointsReconstructed[0] = pointsReconstructed[0] + norma3
+                rot_y_matrix = rotation_matrix(-theta, flip_y)
+                pointsReconstructed = torch.matmul(pointsReconstructed, rot_y_matrix.transpose(1,0))
+                bestPoints = pointsReconstructed
 
     # print("best loss and angle : ", bestLoss.data[0], best_theta)
     val_loss.update(bestLoss.data[0])
 
-    if global_variables.opt.HR:
-        faces_tosave = global_variables.network.mesh_HR.faces
-    else:
-        faces_tosave = global_variables.network.mesh.faces
-    
-    # create initial guess
-    mesh = trimesh.Trimesh(vertices=(bestPoints[0].data.cpu().numpy() + translation)/scalefactor, faces=global_variables.network.mesh.faces, process = False)
-
-
     #START REGRESSION
     print("start regression...")
-    
+
     # rotate with optimal angle
-    rot_matrix = np.array([[np.cos(best_theta), 0, np.sin(best_theta)], [0, 1, 0], [- np.sin(best_theta), 0,  np.cos(best_theta)]])
-    rot_matrix = Variable(torch.from_numpy(rot_matrix).float()).cuda()
-    points2 = torch.matmul(rot_matrix, points)
-    mesh_tmp = trimesh.Trimesh(vertices=points2[0].transpose(1,0).data.cpu().numpy(), faces=global_variables.network.mesh.faces)
-    bbox = np.array([[np.max(mesh_tmp.vertices[:,0]), np.max(mesh_tmp.vertices[:,1]), np.max(mesh_tmp.vertices[:,2])], [np.min(mesh_tmp.vertices[:,0]), np.min(mesh_tmp.vertices[:,1]), np.min(mesh_tmp.vertices[:,2])]])
-    norma = Variable(torch.from_numpy((bbox[0] + bbox[1]) / 2).float().cuda())
+    rot_y_matrix = rotation_matrix(best_theta, best_flip_y)
+    points2 = torch.os.path.exists(matmul(rot_y_matrix, points)
+    mesh_vert = points2[0].transpose(1,0).detach().data
+    bbox0 = torch.max(mesh_vert,dim=0)[0]
+    bbox1 = torch.min(mesh_vert, dim=0)[0]
+    norma = Variable((bbox0 + bbox1) / 2)
     norma2 = norma.unsqueeze(1).expand(3,points2.size(2)).contiguous()
     points2[0] = points2[0] - norma2
-    pointsReconstructed1 = regress(points2)
+    pointsReconstructed1, final_loss = regress(points2)
     # unrotate with optimal angle
     norma3 = norma.unsqueeze(0).expand(pointsReconstructed1.size(1), 3).contiguous()
-    rot_matrix = np.array([[np.cos(-best_theta), 0, np.sin(-best_theta)], [0, 1, 0], [- np.sin(-best_theta), 0,  np.cos(-best_theta)]])
-    rot_matrix = Variable(torch.from_numpy(rot_matrix).float()).cuda()
+    rot_y_matrix = rotation_matrix(-best_theta, best_flip_y)
     pointsReconstructed1[0] = pointsReconstructed1[0] + norma3
-    pointsReconstructed1 = torch.matmul(pointsReconstructed1, rot_matrix.transpose(1,0))
-    
-    # create optimal reconstruction
-    meshReg = trimesh.Trimesh(vertices=(pointsReconstructed1[0].data.cpu().numpy()  + translation)/scalefactor, faces=faces_tosave, process=False)
+    pointsReconstructed1 = torch.matmul(pointsReconstructed1, rot_y_matrix.transpose(1,0))
 
+    # create optimal reconstruction
     print("... Done!")
-    return mesh, meshReg
+    final_points = (pointsReconstructed1[0].data.cpu().numpy()  + translation)/scalefactor
+    return final_points, final_loss
 
 def save(mesh, mesh_color, path, red, green, blue):
     """
@@ -170,7 +168,8 @@ def save(mesh, mesh_color, path, red, green, blue):
         'lst4Tite': green,
         'lst5Tite': blue,
         })
-    write_ply(filename=path, points=points2write, as_text=True, text=False, faces = pd.DataFrame(b.astype(int)), color = True)    
+    write_ply(filename=path, points=points2write, as_text=True, text=False, faces = pd.DataFrame(b.astype(int)), color = True)
+
 def reconstruct(input_p):
     """
     Recontruct a 3D shape by deforming a template
@@ -197,7 +196,56 @@ def reconstruct(input_p):
         green = global_variables.green_HR
         mesh_ref = global_variables.mesh_ref
 
-    save(mesh, global_variables.mesh_ref_LR, input_p[:-4] + "InitialGuess.ply", global_variables.red_LR, global_variables.green_LR, global_variables.blue_LR )
+    #save(mesh, global_variables.mesh_ref_LR, input_p[:-4] + "InitialGuess.ply", global_variables.red_LR, global_variables.green_LR, global_variables.blue_LR )
     save(meshReg, mesh_ref, input_p[:-4] + "FinalReconstruction.ply",  red, green, blue)
     # Save optimal reconstruction
-   
+
+def pca_whiten(V):
+    V -= np.mean(V,axis=0)
+    PCA = sampled_pca(V)
+    V = np.matmul(V ,np.linalg.inv(PCA)))
+    V = rescale_V(V)
+    return V
+
+def rescale_V(V):
+    V -= np.min(V,axis=0)
+    V /= np.max(V)
+    return V
+
+def sampled_pca(X):
+    EVal, EVec = np.linalg.eig(np.matmul(X.transpose(),X))
+    return EVec.transpose()
+
+def reconstruct_npz(inname, outname):
+    """
+    Recontruct a 3D shape by deforming a template
+    :param inname: input path
+    :return: None (but save reconstruction)
+    """
+    if os.path.exists(outname):
+        return
+    with np.load(inname) as npl:
+        V, F = npl['V'], npl['F']
+        pca_whiten(V)
+        V[:,[0, 1, 2]] = V[:,[2, 0,1]] # use the already whitened result to align Y axis
+        V *= 1.7
+    while V.shape[0] < 10000:
+        eV, eF = p2e(V), p2e(F)
+        NV,NF = igl.eigen.MatrixXd(), igl.eigen.MatrixXi()
+        igl.upsample(eV,eF, NV,NF)
+        V,F = e2p(NV), e2p(NF)
+
+        input = trimesh.Trimesh(vertices=V, faces = F, process=False)
+    scalefactor = 1.0
+    if global_variables.opt.scale:
+        input, scalefactor = scale(input, global_variables.mesh_ref_LR) #scale input to have the same volume as mesh_ref_LR
+    if global_variables.opt.clean:
+        input = clean(input) #remove points that doesn't belong to any edges
+    test_orientation(input)
+
+    final_points, final_loss = run(input, scalefactor)
+
+    npz_path = os.path.dirname(outname)
+    if not os.path.exists(npz_path): os.makedirs(npz_path)
+    np.savez(out_name, V=final_points, l = final_loss)
+

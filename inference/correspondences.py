@@ -20,6 +20,7 @@ from modules.nnd import NNDModule
 import visdom
 import global_variables
 import trimesh
+import gc
 
 
 def compute_correspondances(source_p, source_reconstructed_p, target_p, target_reconstructed_p):
@@ -66,20 +67,19 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--HR', type=int, default=1, help='Use high Resolution template for better precision in the nearest neighbor step ?')
     parser.add_argument('--nepoch', type=int, default=3000, help='number of epochs to train for during the regression step')
-    parser.add_argument('--model', type=str, default = 'trained_models/sup_human_network_last.pth',  help='your path to the trained model')
-    parser.add_argument('--inputA', type=str, default =  "data/example_0.ply",  help='your path to mesh 0')
+    parser.add_argument('--model', type=str, default = 'trained_models/sup_human_invY_network_last.pth',  help='your path to the trained model')
+    parser.add_argument('--inputlist', type=str, default =  "data/example_0.ply",  help='your path to mesh 0')
+    parser.add_argument('--inputdir', type=str, default =  "data/example_0.ply",  help='your path to mesh 0')
     parser.add_argument('--inputB', type=str, default =  "data/example_1.ply",  help='your path to mesh 1')
     parser.add_argument('--num_points', type=int, default = 6890,  help='number of points fed to poitnet')
     parser.add_argument('--num_angles', type=int, default = 300,  help='number of angle in the search of optimal reconstruction. Set to 1, if you mesh are already facing the cannonical direction as in data/example_1.ply')
-    parser.add_argument('--env', type=str, default="CODED", help='visdom environment')
+    parser.add_argument('--env', type=str, default='', help='visdom environment')
     parser.add_argument('--clean', type=int, default=1, help='if 1, remove points that dont belong to any edges')
     parser.add_argument('--scale', type=int, default=0, help='if 1, scale input mesh to have same volume as the template')
     parser.add_argument('--project_on_target', type=int, default=0, help='if 1, projects predicted correspondences point on target mesh')
 
-
     opt = parser.parse_args()
     global_variables.opt = opt
-    vis = visdom.Visdom(port=8888, env=opt.env)
 
     distChamfer = NNDModule()
 
@@ -98,14 +98,16 @@ if __name__ == '__main__':
     torch.manual_seed(opt.manualSeed)
     cudnn.benchmark = True
 
-    start = time.time()
-    print("computing correspondences for " + opt.inputA + " and " + opt.inputB)
-
     # Reconstruct meshes
-    reconstruct.reconstruct(opt.inputA)
-    reconstruct.reconstruct(opt.inputB)
+    with open(opt.inputlist) as fp:
+        lines = fp.readlines()
+    for i, l in enumerate(lines):
+        start = time.time()
+        reconstruct.reconstruct_npz(opt.inputdir + l.replace('\n',''))
+        end = time.time()
+        gc.collect()
+        print(i, ": ellapsed time is ", end - start, " seconds !")
+    exit()
 
     # Compute the correspondences through the recontruction
     compute_correspondances(opt.inputA, opt.inputA[:-4] + "FinalReconstruction.ply", opt.inputB, opt.inputB[:-4] + "FinalReconstruction.ply")
-    end = time.time()
-    print("ellapsed time is ", end - start, " seconds !")

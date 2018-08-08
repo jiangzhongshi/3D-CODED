@@ -1,0 +1,6 @@
+*.pyc
+*.pth
+results/
+*.zip
+pytorch/
+data/*.ply
