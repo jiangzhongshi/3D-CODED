@@ -14,6 +14,7 @@ distChamfer = NNDModule()
 import global_variables
 import trimesh
 
+sys.path.insert(0, os.path.expanduser('~/Workspace/libigl/python/py2/'))
 import pyigl as igl
 from iglhelpers import p2e,e2p
 val_loss = AverageValueMeter()
@@ -56,20 +57,33 @@ def rotation_matrix(theta, flip):
     rot_y_matrix = Variable(torch.from_numpy(rot_y_matrix).float()).cuda()
     return rot_y_matrix
 
+def center_V(input_V):
+    """
+    This function center the input mesh using it's bounding box
+    Input : mesh
+    output : centered mesh and translation vector
+    """
+    bbox = np.array([[np.max(input_V[:,0]), np.max(input_V[:,1]), np.max(input_V[:,2])], [np.min(input_V[:,0]), np.min(input_V[:,1]), np.min(input_V[:,2])]])
+
+    tranlation = (bbox[0] + bbox[1]) / 2
+    points = input_V - tranlation
+    return points, tranlation
+
+
 def run(input, scalefactor):
     """
     :param input: input mesh to reconstruct optimally.
     :return: final reconstruction after optimisation
     """
 
-    input, translation = center(input)
+    input, translation = center_V(input)
     if not global_variables.opt.HR:
         mesh_ref = global_variables.mesh_ref_LR
     else:
         mesh_ref = global_variables.mesh_ref
 
     ## Extract points and put them on GPU
-    points = input.vertices
+    points = input
     if np.shape(points)[0] > 10000:
         random_sample = np.random.choice(np.shape(points)[0], size=10000)
     else:
@@ -81,7 +95,7 @@ def run(input, scalefactor):
     points = points.cuda()
 
     # Get a low resolution PC to find the best reconstruction after a rotation on the Y axis
-    points_LR = torch.from_numpy(input.vertices[random_sample].astype(np.float32)).contiguous().unsqueeze(0)
+    points_LR = torch.from_numpy(input[random_sample].astype(np.float32)).contiguous().unsqueeze(0)
     points_LR = Variable(points_LR)
     points_LR = points_LR.transpose(2, 1).contiguous()
     points_LR = points_LR.cuda()
@@ -230,7 +244,7 @@ def reconstruct_npz(inname, outname):
         V = V[:, np.roll(np.arange(3), 1-max_axis)] # 1 means Y
         V *= 1.7
     assert (np.max(V,axis=0) - np.min(V,axis=0))[1] > 1.69
-    while V.shape[0] < 10000:
+    while V.shape[0] < 1e4:
         eV, eF = p2e(V), p2e(F)
         NV,NF = igl.eigen.MatrixXd(), igl.eigen.MatrixXi()
         igl.upsample(eV,eF, NV,NF)
@@ -244,7 +258,10 @@ def reconstruct_npz(inname, outname):
         input = clean(input) #remove points that doesn't belong to any edges
     test_orientation(input)
 
-    final_points, final_loss = run(input, scalefactor)
+    inp_V = input.vertices
+    if inp_V.shape[0] > 1e5:
+        inp_V = inp_V[np.random.choice(inp_V.shape[0], int(1e5), replace=False), :]
+    final_points, final_loss = run(inp_V, scalefactor)
 
     npz_path = os.path.dirname(outname)
     if not os.path.exists(npz_path): os.makedirs(npz_path)
